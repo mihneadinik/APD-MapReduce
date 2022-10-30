@@ -8,7 +8,7 @@ TARGETS=homework
 build: $(TARGETS)
 
 homework: main.cpp
-	$(CC) $(CFLAGS) main.cpp -o tema1
+	$(CC) main.cpp -o tema1 $(CFLAGS)
 
 clean:
 	rm -rf $(TARGETS)
