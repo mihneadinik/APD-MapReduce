@@ -87,13 +87,15 @@ void print_string_vec(std::vector<std::string>& files) {
     }
 }
 
-bool is_perfect_power(int n, int p) {
+std::vector<bool> is_perfect_power(int n, int max_pow) {
+    std::vector<bool> results(max_pow - 2, false);
     if (n <= 0) {
-        return false;
+        return results;
     }
 
     if (n == 1) {
-        return true;
+        results.assign(max_pow - 2, true);
+        return results;
     }
 
     std::unordered_map<int, int> prime_factors;
@@ -118,18 +120,21 @@ bool is_perfect_power(int n, int p) {
         }
     }
 
-    if (prime_factors.empty()) {
-        return false;
+    if (prime_factors.empty() || n != 1) {
+        return results;
     }
 
-    int pow = prime_factors.begin()->second;
-    for (auto it = prime_factors.begin(); it != prime_factors.end(); it++) {
-        if (pow != it->second) {
-            return false;
+    results.assign(max_pow - 2, true);
+    for (int p = 2; p <= max_pow; p++) {
+        for (auto it = prime_factors.begin(); it != prime_factors.end(); it++) {
+            if (it->second % p != 0) {
+                results[p - 2] = false;
+                break;
+            }
         }
     }
 
-    return pow && (pow % p) == 0;
+    return results;
 }
 
 void *mappers_function(void *arg) {
@@ -141,8 +146,8 @@ void *mappers_function(void *arg) {
         // Only one thread at a time is allowed to check for an unopened file
         std::pair<std::string, int> top_file = thread_info->files->top();
 
-        std::cout << "Thread: " << thread_info->current_thread_id << " ";
-        std::cout << top_file.first << " " << top_file.second << std::endl;
+        // std::cout << "Thread: " << thread_info->current_thread_id << " ";
+        // std::cout << top_file.first << " " << top_file.second << std::endl;
         if (top_file.second == 0) {
             thread_info->files->pop();
             thread_info->files->push({top_file.first, 1});
@@ -174,8 +179,9 @@ void *mappers_function(void *arg) {
             number = stoi(line);
 
             // Check if the read number is a perfect power
+            std::vector<bool> results = is_perfect_power(number, thread_info->max_pow);
             for (int p = 2; p <= thread_info->max_pow; p++) {
-                if (is_perfect_power(number, p)) {
+                if (results[p - 2]) {
                     (*thread_info->mappers_to_lists)[thread_info->current_thread_id].at(p - 2).push_front(number);
                 }
             }
@@ -203,10 +209,10 @@ void *reducers_function(void *arg) {
         }
     }
 
-    std::cout << "Thread: " << thread_info->current_thread_id << " " << unique.size() << std::endl;
-    // std::ofstream file (output_name);
-    // file << unique.size() << std::endl;
-    // file.close();
+    // std::cout << "Thread: " << thread_info->current_thread_id << " " << unique.size() << std::endl;
+    std::ofstream file (output_name);
+    file << unique.size();
+    file.close();
 
     pthread_exit(NULL);
 }
