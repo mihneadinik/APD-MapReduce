@@ -1,7 +1,7 @@
 # Mihnea Dinica 333CA
 
 CC=g++
-CFLAGS=-Wall -Werror -lpthread
+CFLAGS=-Wall -Werror -lpthread -lm
 
 TARGETS=homework
 
