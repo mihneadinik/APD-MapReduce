@@ -2,6 +2,7 @@
 #include <fstream>
 #include <pthread.h>
 #include <math.h>
+#include <algorithm>
 #include <vector>
 #include <queue>
 #include <unordered_map>
@@ -21,7 +22,9 @@ struct threads_info {
     bool *mappers_finished;
     int max_pow;
     pthread_mutex_t *mutex;
+    pthread_barrier_t *barrier;
     std::unordered_map<int, std::vector<std::forward_list<int>>> *mappers_to_lists;
+    std::unordered_map<int, std::vector<int>> *perfect_powers;;
     std::priority_queue<std::pair<std::string, int>,
                         std::vector<std::pair<std::string, int>>,
                         decltype(compare)> *files;
@@ -43,8 +46,10 @@ void parse_arguments(int argc, char **argv, int& nr_mappers,
 
 // find the maximum exponent to be checked and total number of threads
 // initialise the map structure for mappers
+// precompute perfect powers up to the maximum exponent
 void init_values(int& max_pow, int& nr_threads,
                  std::unordered_map<int, std::vector<std::forward_list<int>>>& mappers_to_lists,
+                 std::unordered_map<int, std::vector<int>>& perfect_powers,
                  int nr_reducers, int nr_mappers) {
     nr_threads = nr_reducers + nr_mappers;
     for (int i = 0; i < nr_mappers; i++) {
@@ -52,6 +57,13 @@ void init_values(int& max_pow, int& nr_threads,
         mappers_to_lists.insert({i, empty});
     }
     max_pow = ++nr_reducers;
+
+    // precompute perfect powers
+    for (int i = 2; i <= max_pow; i++) {
+        for (int base = 2; pow(base, i) < INT32_MAX; base++) {
+            perfect_powers[i].push_back(pow(base, i));
+        }
+    }
 }
 
 // parse input file and store the files to be used
@@ -81,63 +93,8 @@ void read_input_file(std::priority_queue<std::pair<std::string, int>,
     file.close();
 }
 
-void print_string_vec(std::vector<std::string>& files) {
-    for (std::string elem : files) {
-        std::cout << elem << std::endl;
-    }
-}
-
-std::vector<bool> is_perfect_power(int n, int max_pow) {
-    std::vector<bool> results(max_pow - 2, false);
-    if (n <= 0) {
-        return results;
-    }
-
-    if (n == 1) {
-        results.assign(max_pow - 2, true);
-        return results;
-    }
-
-    std::unordered_map<int, int> prime_factors;
-    int count = 0;
-
-    while (n % 2 == 0) {
-        ++count;
-        n /= 2;
-    }
-    if (count) {
-        prime_factors[2] = count;
-    }
-
-    for (int i = 3; i <= sqrt(n); i += 2) {
-        count = 0;
-        while (n % i == 0) {
-            ++count;
-            n /= i;
-        }
-        if(count) {
-            prime_factors[i] = count;
-        }
-    }
-
-    if (prime_factors.empty() || n != 1) {
-        return results;
-    }
-
-    results.assign(max_pow - 2, true);
-    for (int p = 2; p <= max_pow; p++) {
-        for (auto it = prime_factors.begin(); it != prime_factors.end(); it++) {
-            if (it->second % p != 0) {
-                results[p - 2] = false;
-                break;
-            }
-        }
-    }
-
-    return results;
-}
-
-void *mappers_function(void *arg) {
+// actions performed by mappers only
+void mappers_function(void *arg) {
     threads_info *thread_info = (threads_info *)arg;
 
     while (! *thread_info->mappers_finished) {
@@ -146,13 +103,12 @@ void *mappers_function(void *arg) {
         // Only one thread at a time is allowed to check for an unopened file
         std::pair<std::string, int> top_file = thread_info->files->top();
 
-        // std::cout << "Thread: " << thread_info->current_thread_id << " ";
-        // std::cout << top_file.first << " " << top_file.second << std::endl;
         if (top_file.second == 0) {
             thread_info->files->pop();
             thread_info->files->push({top_file.first, 1});
         } else {
             *thread_info->mappers_finished = true;
+            pthread_mutex_unlock(thread_info->mutex);
             break;
         }
         
@@ -179,9 +135,10 @@ void *mappers_function(void *arg) {
             number = stoi(line);
 
             // Check if the read number is a perfect power
-            std::vector<bool> results = is_perfect_power(number, thread_info->max_pow);
             for (int p = 2; p <= thread_info->max_pow; p++) {
-                if (results[p - 2]) {
+                if (number == 1 ||
+                    std::binary_search((*thread_info->perfect_powers)[p].begin(),
+                              (*thread_info->perfect_powers)[p].end(), number)) {
                     (*thread_info->mappers_to_lists)[thread_info->current_thread_id].at(p - 2).push_front(number);
                 }
             }
@@ -189,19 +146,16 @@ void *mappers_function(void *arg) {
 
         file.close();
     }
-    pthread_exit(NULL);
 }
 
-void *reducers_function(void *arg) {
+// actions performed by reducers only
+void reducers_function(void *arg) {
     threads_info *thread_info = (threads_info *)arg;
     int list_index = thread_info->current_thread_id - thread_info->nr_mappers;
     std::string output_name = "out" + std::to_string(list_index + 2) + ".txt";
     std::unordered_set<int> unique;
 
-    while (! *thread_info->mappers_finished) {
-        // wait until all mappers have finished
-    }
-
+    // save perfect powers in a set to exclude duplicates
     for (int i = 0; i < thread_info->nr_mappers; i++) {
         std::forward_list<int> list = (*thread_info->mappers_to_lists)[i].at(list_index);
         for (auto it = list.begin(); it != list.end(); it++) {
@@ -209,10 +163,23 @@ void *reducers_function(void *arg) {
         }
     }
 
-    // std::cout << "Thread: " << thread_info->current_thread_id << " " << unique.size() << std::endl;
     std::ofstream file (output_name);
     file << unique.size();
     file.close();
+}
+
+// control function for threads
+void *driver_function(void *arg) {
+    threads_info *thread_info = (threads_info *)arg;
+    if (thread_info->current_thread_id < thread_info->nr_mappers) {
+        mappers_function(arg);
+    }
+
+    pthread_barrier_wait(thread_info->barrier);
+
+    if (thread_info->current_thread_id >= thread_info->nr_mappers) {
+        reducers_function(arg);
+    }
 
     pthread_exit(NULL);
 }
@@ -224,36 +191,36 @@ int main(int argc, char *argv[]) {
     bool mappers_finished = false;
     std::string input_file;
     std::unordered_map<int, std::vector<std::forward_list<int>>> mappers_to_lists;
+    std::unordered_map<int, std::vector<int>> perfect_powers;
     std::priority_queue<std::pair<std::string, int>,
                         std::vector<std::pair<std::string, int>>,
                         decltype(compare)> files(compare);
 
     parse_arguments(argc, argv, nr_mappers, nr_reducers, input_file);
     read_input_file(files, nr_files, input_file);
-    init_values(max_pow, nr_threads, mappers_to_lists, nr_reducers, nr_mappers);
+    init_values(max_pow, nr_threads, mappers_to_lists, perfect_powers, nr_reducers, nr_mappers);
 
     pthread_t t_id[nr_threads];
     threads_info t_info[nr_threads];
     pthread_mutex_t mutex;
+    pthread_barrier_t barrier;
 
-    // create the threads and initialise mutex
+    // create the threads and initialise mutex & barrier
     pthread_mutex_init(&mutex, NULL);
+    pthread_barrier_init(&barrier, NULL, nr_threads);
 
     for (int i = 0; i < nr_threads; i++) {
-		t_info[i] = threads_info {i, nr_mappers, &mappers_finished,
-                            max_pow, &mutex, &mappers_to_lists, &files};
-        if (i < nr_mappers) {
-		    pthread_create(&t_id[i], NULL, mappers_function, &t_info[i]);
-        } else {
-            pthread_create(&t_id[i], NULL, reducers_function, &t_info[i]);
-        }
+		t_info[i] = threads_info {i, nr_mappers, &mappers_finished,max_pow,
+                            &mutex, &barrier, &mappers_to_lists, &perfect_powers, &files};
+        pthread_create(&t_id[i], NULL, driver_function, &t_info[i]);
 	}
 
-    // wait for the threads to finish and delete mutex
+    // wait for the threads to finish and delete mutex & barrier
     for (int i = 0; i < nr_threads; i++) {
 		pthread_join(t_id[i], NULL);
 	}
 
     pthread_mutex_destroy(&mutex);
+    pthread_barrier_destroy(&barrier);
     return 0;
 }
